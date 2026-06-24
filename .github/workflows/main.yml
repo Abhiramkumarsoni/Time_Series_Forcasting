@@ -5,7 +5,7 @@ on:
     branches: [ main, develop ]
     paths:
       - 'retail-sales-forecasting/**'
-      - '.github/workflows/ci-pipeline.yml'
+      - '.github/workflows/main.yml'
   pull_request:
     branches: [ main, develop ]
     paths:
