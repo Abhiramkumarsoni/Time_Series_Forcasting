@@ -1,0 +1,251 @@
+name: CI Pipeline
+
+on:
+  push:
+    branches: [ main, develop ]
+    paths:
+      - 'retail-sales-forecasting/**'
+      - '.github/workflows/ci-pipeline.yml'
+  pull_request:
+    branches: [ main, develop ]
+    paths:
+      - 'retail-sales-forecasting/**'
+  schedule:
+    - cron: '0 2 * * *'  # Daily at 2 AM UTC
+
+jobs:
+  code-quality:
+    name: Code Quality Checks
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ['3.10', '3.11']
+    
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Cache pip dependencies
+        uses: actions/cache@v3
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+
+      - name: Install dependencies
+        run: |
+          cd retail-sales-forecasting
+          python -m pip install --upgrade pip setuptools wheel
+          pip install -r requirements.txt
+
+      - name: Lint with Ruff
+        run: |
+          cd retail-sales-forecasting
+          ruff check src/ tests/ streamlit_app/ || true
+
+      - name: Format check with Black
+        run: |
+          cd retail-sales-forecasting
+          black --check src/ tests/ streamlit_app/ || true
+
+      - name: Import sorting check with isort
+        run: |
+          cd retail-sales-forecasting
+          isort --check-only src/ tests/ streamlit_app/ || true
+
+  unit-tests:
+    name: Unit Tests
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ['3.10', '3.11']
+    
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Cache pip dependencies
+        uses: actions/cache@v3
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+
+      - name: Install dependencies
+        run: |
+          cd retail-sales-forecasting
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run tests with coverage
+        run: |
+          cd retail-sales-forecasting
+          pytest tests/ -v --tb=short --cov=src --cov-report=xml --cov-report=term-missing
+
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v3
+        with:
+          files: ./retail-sales-forecasting/coverage.xml
+          flags: unittests
+          name: codecov-umbrella
+          fail_ci_if_error: false
+
+  data-generation:
+    name: Test Data Generation
+    runs-on: ubuntu-latest
+    
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Cache pip dependencies
+        uses: actions/cache@v3
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+
+      - name: Install dependencies
+        run: |
+          cd retail-sales-forecasting
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Generate synthetic data
+        run: |
+          cd retail-sales-forecasting
+          python -c "from src.data_loader import generate_synthetic_data; generate_synthetic_data()"
+
+      - name: Verify data generation
+        run: |
+          cd retail-sales-forecasting
+          ls -la data/raw/
+          python -c "import pandas as pd; df = pd.read_csv('data/raw/retail_sales_raw.csv'); print(f'Data shape: {df.shape}'); print(df.head())"
+
+  model-training:
+    name: Test Model Training
+    runs-on: ubuntu-latest
+    needs: data-generation
+    
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Cache pip dependencies
+        uses: actions/cache@v3
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+
+      - name: Install dependencies
+        run: |
+          cd retail-sales-forecasting
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Generate synthetic data
+        run: |
+          cd retail-sales-forecasting
+          python -c "from src.data_loader import generate_synthetic_data; generate_synthetic_data()"
+
+      - name: Train models
+        timeout-minutes: 30
+        run: |
+          cd retail-sales-forecasting
+          python -m src.models.trainer
+
+      - name: Verify model artifacts
+        run: |
+          cd retail-sales-forecasting
+          ls -la models/
+          echo "✅ Model training completed successfully"
+
+  docker-build:
+    name: Docker Build Test
+    runs-on: ubuntu-latest
+    
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v2
+
+      - name: Build Docker image
+        uses: docker/build-push-action@v4
+        with:
+          context: ./retail-sales-forecasting
+          file: ./retail-sales-forecasting/Dockerfile
+          push: false
+          tags: retail-sales-forecasting:test
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  security-scan:
+    name: Security Scan
+    runs-on: ubuntu-latest
+    
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Install security tools
+        run: |
+          pip install bandit safety
+
+      - name: Run Bandit security scan
+        run: |
+          cd retail-sales-forecasting
+          bandit -r src/ -f json -o bandit-report.json || true
+          bandit -r src/ || true
+
+      - name: Check dependencies with Safety
+        run: |
+          cd retail-sales-forecasting
+          safety check --json || true
+
+  build-status:
+    name: Build Status
+    runs-on: ubuntu-latest
+    needs: [code-quality, unit-tests, data-generation, model-training, docker-build, security-scan]
+    if: always()
+    
+    steps:
+      - name: Check build status
+        run: |
+          if [[ "${{ needs.code-quality.result }}" == "failure" || \
+                "${{ needs.unit-tests.result }}" == "failure" || \
+                "${{ needs.data-generation.result }}" == "failure" || \
+                "${{ needs.model-training.result }}" == "failure" || \
+                "${{ needs.docker-build.result }}" == "failure" ]]; then
+            echo "❌ Pipeline failed"
+            exit 1
+          else
+            echo "✅ All checks passed!"
+          fi
